@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Laptop Control
+Comment=Start the Laptop Control tray and virtual camera standby
+Exec=/usr/bin/systemctl --user start laptop-control.service
+Icon=laptop-control
+Terminal=false
+X-KDE-autostart-after=panel
+X-GNOME-Autostart-enabled=true

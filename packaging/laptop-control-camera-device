@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Add our own device; never reload the module or modify an OBS loopback.
+device=
+for name in /sys/class/video4linux/video*/name; do
+  [[ -f "$name" ]] || continue
+  if [[ $(<"$name") == 'Laptop Control Camera' ]]; then
+    device="/dev/$(basename "$(dirname "$name")")"
+    break
+  fi
+done
+if [[ -z "$device" ]]; then
+  /usr/sbin/modprobe v4l2loopback
+  device=$(/usr/bin/v4l2loopback-ctl add --name 'Laptop Control Camera' --exclusive-caps 1 --buffers 2 --max-width 1920 --max-height 1080)
+fi
+# Existing meeting consumers receive black after a producer stops/crashes.
+/usr/bin/v4l2-ctl -d "$device" --set-ctrl=timeout=1000

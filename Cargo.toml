@@ -1,0 +1,30 @@
+[package]
+name = "raf-fans"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.92"
+authors = ["R. A. Giampaolo"]
+description = "Native Linux laptop fan control and webcam studio"
+readme = "README.md"
+license = "MIT"
+default-run = "laptop-control"
+
+[dependencies]
+eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+libc = "0.2"
+raw-window-handle = "0.6"
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "wayland", "x11"] }
+wayland-client = "0.31.15"
+wayland-backend = { version = "0.3.17", features = ["client_system"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[[bin]]
+name = "laptop-control"
+path = "src/main.rs"

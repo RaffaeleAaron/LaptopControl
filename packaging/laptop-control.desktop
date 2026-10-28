@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Laptop Control
+Comment=Fan profiles, webcam controls and Intel GPU logo overlays
+Exec=/usr/local/bin/laptop-control
+Icon=laptop-control
+Terminal=false
+Categories=System;Monitor;AudioVideo;Video;
+StartupWMClass=laptop-control

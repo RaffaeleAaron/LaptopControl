@@ -1,0 +1,16 @@
+#!/bin/sh
+# Suspend restores firmware control; restart restores the saved profile after fresh sensor readings.
+case "$1" in
+  pre)
+    if /usr/bin/systemctl is-active --quiet raf-fand.service; then
+      /usr/bin/touch /run/raf-fans-resume
+      /usr/bin/systemctl stop raf-fand.service
+    fi
+    ;;
+  post)
+    if test -f /run/raf-fans-resume; then
+      /usr/bin/rm -f /run/raf-fans-resume
+      /usr/bin/systemctl start raf-fand.service
+    fi
+    ;;
+esac

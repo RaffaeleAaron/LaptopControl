@@ -1,0 +1,18 @@
+[Unit]
+Description=Laptop Control tray and virtual camera
+PartOf=graphical-session.target
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 "@HELPER@" --service --gui "@GUI@"
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+RuntimeDirectory=laptop-control
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

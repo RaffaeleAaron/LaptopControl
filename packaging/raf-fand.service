@@ -1,0 +1,33 @@
+[Unit]
+Description=Laptop Control fan service
+After=systemd-modules-load.service
+Conflicts=tccd.service fancontrol.service
+
+[Service]
+Type=notify
+ExecStart=/usr/local/libexec/raf-fand
+ExecStopPost=/usr/local/libexec/raf-fand --restore
+Restart=on-failure
+RestartSec=3
+WatchdogSec=20
+TimeoutStopSec=10
+RuntimeDirectory=raf-fans
+RuntimeDirectoryMode=0750
+StateDirectory=raf-fans
+StateDirectoryMode=0700
+UMask=0007
+User=root
+Group=@GROUP@
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+# NVIDIA telemetry may need access to its device nodes as well as tuxedo_io.
+# Device policy is deliberately left to normal root/device permissions.
+
+[Install]
+WantedBy=multi-user.target

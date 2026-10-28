@@ -1,0 +1,14 @@
+/target/
+*.log
+__pycache__/
+*.py[cod]
+/preview*.png
+/dist/
+.DS_Store
+.env
+.env.*
+/.aws/
+/.codex/
+/.agents/
+.venv/
+.pytest_cache/

@@ -4,6 +4,7 @@ mod camera;
 mod camera_model;
 mod navigation;
 mod preferences;
+mod raster;
 mod system_info;
 mod widgets;
 use navigation::Page;
@@ -824,6 +825,21 @@ fn raw(v: Option<i32>) -> String {
 }
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    if args
+        .get(1)
+        .is_some_and(|value| matches!(value.as_str(), "--render-raster" | "--tray-icon"))
+    {
+        if let Err(error) = raster::run(&args[1..]) {
+            eprintln!("Image rejected: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    // The interface and camera pipeline must never inherit administrator privileges.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("Run Laptop Control as your desktop user, not root");
+        std::process::exit(1);
+    }
     let arg = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
     let socket = arg("--socket").unwrap_or(SOCKET.into());
     let theme = match arg("--theme").as_deref() {

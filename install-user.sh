@@ -11,13 +11,14 @@ if ! systemctl is-active --quiet raf-fand.service; then
   echo 'Set up the system components first: sudo ./install.sh <login-name>' >&2; exit 1
 fi
 test -x target/release/laptop-control
+test -x /usr/bin/bwrap || { echo "Install bubblewrap first." >&2; exit 1; }
 /usr/bin/python3 -c 'import gi, cairo; gi.require_version("Gst", "1.0"); gi.require_version("Rsvg", "2.0"); gi.require_version("PangoCairo", "1.0"); from gi.repository import Gst, Rsvg, PangoCairo'
 user_data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}
 user_config_root=${XDG_CONFIG_HOME:-"$HOME/.config"}
 user_bin_root="$HOME/.local/bin"
 install -Dm755 target/release/laptop-control "$user_bin_root/laptop-control"
 install -Dm644 helpers/camera.py "$user_data_root/laptop-control/camera.py"
-install -m644 helpers/virtual_output.py helpers/control_service.py helpers/tray.py vendor/cameractrls.py vendor/cameractrls-LICENSE vendor/COPYING vendor/COPYING.LESSER LICENSE "$user_data_root/laptop-control/"
+install -m644 helpers/virtual_output.py helpers/control_service.py helpers/tray.py helpers/security.py helpers/render_asset.py vendor/cameractrls.py vendor/cameractrls-LICENSE vendor/COPYING vendor/COPYING.LESSER LICENSE "$user_data_root/laptop-control/"
 install -m644 assets/README.md "$user_data_root/laptop-control/ICON-NOTICE.md"
 install -m644 vendor/README.md "$user_data_root/laptop-control/THIRD-PARTY.md"
 install -Dm644 assets/laptop-control.png "$user_data_root/icons/hicolor/256x256/apps/laptop-control.png"

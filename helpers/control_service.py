@@ -8,7 +8,9 @@ import socket
 import subprocess
 import threading
 import time
+import stat
 from gi.repository import GLib
+from security import CommandReader, MAX_CLIENTS, MAX_COMMAND_BYTES, atomic_json, runtime_directory, same_user
 
 class Client:
     def __init__(self, stream):
@@ -26,13 +28,18 @@ class Client:
 class ControlService:
     def __init__(self,worker,gui,fan_socket):
         self.worker,self.gui=worker,gui
-        self.runtime=Path(os.environ.get('XDG_RUNTIME_DIR',f'/run/user/{os.getuid()}'))/'laptop-control'
-        self.runtime.mkdir(mode=0o700,parents=True,exist_ok=True)
-        self.lock_file=(self.runtime/'camera.lock').open('w')
+        self.runtime=runtime_directory()
+        self.lock_file=os.fdopen(os.open(self.runtime/'camera.lock',os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW|os.O_CLOEXEC,0o600),'w')
         fcntl.flock(self.lock_file,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        self.path=self.runtime/'camera.sock';self.path.unlink(missing_ok=True)
+        self.path=self.runtime/'camera.sock'
+        if self.path.exists() or self.path.is_symlink():
+            info=self.path.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.getuid():
+                raise PermissionError('Refusing to replace an unexpected camera socket path')
+            self.path.unlink()
         self.listener=socket.socket(socket.AF_UNIX);self.listener.bind(str(self.path));os.chmod(self.path,0o600);self.listener.listen(8)
         self.clients=[];self.current=None;self.last_launch=0.;self.closed=False
+        self.clients_lock=threading.Lock()
         self.directory=Path(os.environ.get('XDG_CONFIG_HOME',str(Path.home()/'.config')))/'laptop-control'
         self.book_cache=None;self.book_stamp=None;self.live_book=None
         self.tray=None
@@ -51,11 +58,20 @@ class ControlService:
         try:
             stamp=path.stat().st_mtime_ns
             if self.book_cache is not None and stamp==self.book_stamp:return self.book_cache
+            if path.stat().st_size>MAX_COMMAND_BYTES:raise ValueError('Camera configuration is too large')
             book=json.loads(path.read_text())
+            if not isinstance(book,dict):raise ValueError('Invalid camera configuration')
+            scenes=book.get('scenes')
+            if scenes is not None and (not isinstance(scenes,list) or any(not isinstance(s,dict) or not isinstance(s.get('layers',[]),list) for s in scenes)):
+                raise ValueError('Invalid scene list')
+            if type(book.get('selected_scene',0)) is not int:raise ValueError('Invalid scene selection')
         except (OSError,ValueError):book={};stamp=None
         defaults={'input':'','width':1280,'height':720,'fps':30,'format':'MJPG','mirror':False,'controls':{},'selected_scene':0}
         for key,value in defaults.items():book.setdefault(key,value)
         if not book.get('scenes'):book['scenes']=[{'name':'Scene 1','layers':book.pop('overlays',[])}]
+        for i,scene in enumerate(book['scenes']):
+            scene.setdefault('layers',[])
+            if not isinstance(scene.get('name'),str):scene['name']=f'Scene {i+1}'
         book['selected_scene']=min(max(0,book['selected_scene']),len(book['scenes'])-1)
         self.book_cache,self.book_stamp=book,stamp
         return book
@@ -66,33 +82,41 @@ class ControlService:
         return {**{key:book[key] for key in ('input','width','height','fps','format','mirror','controls')},'overlays':book['scenes'][index]['layers'],'scene_index':index}
 
     def persist_output(self,enabled):
-        self.directory.mkdir(parents=True,exist_ok=True)
-        temp=self.directory/'virtual-output.json.new';temp.write_text(json.dumps({'enabled':enabled}));temp.replace(self.directory/'virtual-output.json')
+        atomic_json(self.directory/'virtual-output.json',{'enabled':enabled})
 
     def restore_virtual(self):
         try:enabled=json.loads((self.directory/'virtual-output.json').read_text()).get('enabled',True)
-        except (OSError,ValueError):enabled=True
+        except (OSError,ValueError,AttributeError):enabled=True
         if enabled:self.worker.handle({'op':'virtual','enabled':True,'config':self.payload(self.load_book())})
 
     def accept(self):
         while not self.closed:
             try:stream,_=self.listener.accept()
             except OSError:break
-            client=Client(stream);self.clients.append(client)
+            with self.clients_lock:
+                if len(self.clients)>=MAX_CLIENTS or not same_user(stream):
+                    stream.close();continue
+                client=Client(stream);self.clients.append(client)
             threading.Thread(target=self.read,args=(client,),daemon=True).start()
 
     def read(self,client):
         try:
-            with client.stream.makefile('r') as reader:
-                for line in reader:
-                    try:command=json.loads(line)
-                    except ValueError:continue
-                    GLib.idle_add(self.dispatch,client,command)
-        except OSError:pass
-        GLib.idle_add(self.disconnected,client)
+            reader=CommandReader(client.stream)
+            while not self.closed:
+                command=reader.receive()
+                if command is None:break
+                done=threading.Event()
+                def dispatch_one(command=command,done=done):
+                    try:return self.dispatch(client,command)
+                    finally:done.set()
+                GLib.idle_add(dispatch_one)
+                while not self.closed and not done.wait(.2):pass
+        except (OSError,ValueError,TypeError,RecursionError):pass
+        finally:GLib.idle_add(self.disconnected,client)
 
     def disconnected(self,client):
-        if client in self.clients:self.clients.remove(client)
+        with self.clients_lock:
+            if client in self.clients:self.clients.remove(client)
         client.close()
         if not any(c.subscribed for c in self.clients):self.worker.handle({'op':'preview','enabled':False,'path':str(self.runtime/'preview.rgba')})
         return False
@@ -124,6 +148,8 @@ class ControlService:
                 self.worker.handle(command)
                 if not self.worker.error and op in ('start','scene') and command.get('book'):self.live_book=command['book']
                 if op=='stop':self.live_book=None
+        except (ValueError,TypeError,KeyError,IndexError,AttributeError) as error:
+            client.send({'error':'Invalid camera request: '+str(error)})
         finally:self.current=None
         return False
 
@@ -155,8 +181,7 @@ class ControlService:
         book=self.load_book()
         if not 0<=index<len(book['scenes']):return
         book['selected_scene']=index
-        self.directory.mkdir(parents=True,exist_ok=True)
-        temp=self.directory/'camera.json.new';temp.write_text(json.dumps(book,ensure_ascii=False,indent=2));temp.replace(self.directory/'camera.json')
+        atomic_json(self.directory/'camera.json',book)
         self.book_stamp=(self.directory/'camera.json').stat().st_mtime_ns
         self.worker.handle({'op':'scene','config':self.payload(book)})
         if not self.worker.error:self.live_book=book

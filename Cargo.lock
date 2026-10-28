@@ -1062,6 +1062,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1920,7 +1922,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "raf-fans"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "eframe",
  "image",

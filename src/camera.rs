@@ -226,6 +226,10 @@ impl Camera {
         let helper = crate::background::helper();
         let mut child = Command::new("/usr/bin/python3")
             .arg(helper)
+            .env(
+                "LAPTOP_CONTROL_RASTER_BINARY",
+                std::env::current_exe().map_err(|e| e.to_string())?,
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

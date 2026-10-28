@@ -20,7 +20,7 @@ the app does not change CPU power limits or performance policies.
 
 The fan backend is specifically implemented for the **TUXEDO InfinityBook Pro
 Gen7 MK2**, board `PH6AG01_PH6AQ71_PH6AQI1`, on Linux x86_64. It uses
-`/dev/tuxedo_io` from tuxedo-drivers. It is not a generic laptop EC driver.
+`/dev/tuxedo_io` from tuxedo-drivers. It is not a generic laptop EC driver. See [SECURITY.md](SECURITY.md) for the trust boundaries and security limitations.
 Development and hardware checks used Fedora KDE and an Intel/NVIDIA hybrid laptop.
 Camera composition currently requires an Intel render device. KDE supplies the
 palette, native blur, file picker, and system tray integration.
@@ -47,7 +47,7 @@ Use Rust **1.92 or later**, Cargo, and the committed lockfile:
 cargo build --release --locked
 ```
 
-Runtime dependencies include tuxedo-drivers, systemd, Python 3/PyGObject, Pillow,
+Runtime dependencies include tuxedo-drivers, systemd, Python 3/PyGObject, Bubblewrap,
 Cairo/Pango, librsvg, GStreamer with OpenGL/VA/video4linux2 plugins,
 `v4l2loopback` and its tools, `v4l2-ctl`, and KDE `kdialog`. Install these using
 packages appropriate to your distribution and running kernel before installation.
@@ -76,8 +76,8 @@ For later **GUI/camera-only** updates on an already configured system:
 This installs under `~/.local`, overrides the application launcher for your user,
 and restarts the camera/tray service without restarting the fan daemon. Close
 and save your work first; a camera-service restart stops active capture. Use the
-full installer for version 0.4's new fan averaging support. A GUI-only update
-cannot add that capability to an older system daemon.
+full installer for version 0.4.1's fan-service authorization and installer hardening. A GUI-only update
+cannot add those protections to an older system daemon.
 
 Open **Laptop Control** from the KDE launcher or tray. The tray starts at login;
 the physical camera never starts automatically. The legacy `raf-fans` and
@@ -152,7 +152,7 @@ termination or system shutdown cannot offer an interactive save dialog.
 The preview sits above Capture and Scenes & Logos. Below the latter, Scenes are
 stacked above Layers on the left, with the inspector on the right. Add, duplicate,
 rename and delete scenes; add image/text layers, change their order or visibility,
-and drag/resize them in the preview. SVG and text rasterization is cached; normal
+and drag/resize them in the preview. SVG and text rasterization is cached in a resource-limited, filesystem/network-isolated worker; normal
 composition uses Intel GPU textures. Save changes persists all scenes.
 
 **Start camera** and **Virtual camera output** are independent:
@@ -198,9 +198,9 @@ D0-gated telemetry worker.
 | Virtual-output preference | `~/.config/laptop-control/virtual-output.json` |
 | Local camera IPC and preview | `$XDG_RUNTIME_DIR/laptop-control/` |
 
-User configuration respects `XDG_CONFIG_HOME`. Legacy settings and single-scene
+User configuration respects `XDG_CONFIG_HOME`. Settings directories must be owned by the desktop user, private, and not symlinks; settings files are written as 0600. Legacy settings and single-scene
 camera files migrate automatically. The camera socket is user-only (0600), inside
-a 0700 runtime directory. The fan socket is restricted to the configured group.
+a 0700 runtime directory. The fan socket is restricted to the configured group and peer UID (root or the configured desktop user).
 
 ```sh
 systemctl status raf-fand.service
@@ -237,6 +237,7 @@ python3 tests/camera_smoke.py
 python3 tests/camera_smoke.py --real
 python3 tests/service_smoke.py
 python3 tests/render_ui.py
+python3 scripts/check-advisories.py
 ```
 
 The default camera test uses synthetic video. `--real` briefly opens the physical
@@ -252,6 +253,13 @@ backend is **LGPL-3.0-or-later**; its source, attribution and full license texts
 are in [vendor/](vendor/README.md). Supplied processor artwork has separate,
 unestablished redistribution terms; see [assets/README.md](assets/README.md).
 Generated previews, caches, local environment files and build outputs are ignored.
+
+Overlay input limits are 8 MiB per image, 4096 pixels per input dimension,
+1280-pixel cached raster output, and 8192 text characters. SVG linked files,
+external stylesheets, DTDs and entities are unsupported; embed images/fonts in
+the document. Invalid or oversized layers report a warning instead of opening
+resources outside the sandbox. Bubblewrap/user namespaces are required; there is
+no unsandboxed fallback. Pillow is not used by the application.
 
 ## Uninstall
 

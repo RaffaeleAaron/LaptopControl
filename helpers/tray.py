@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import socket
 import json
+import subprocess
 from gi.repository import Gio, GLib
 
 ITEM = '''<node><interface name="org.kde.StatusNotifierItem">
@@ -59,11 +60,9 @@ class Tray:
         self.icon=self.icon_path()
         self.pixmaps=[]
         if self.icon:
-            from PIL import Image
-            with Image.open(self.icon) as image:
-                image=image.convert('RGBA').resize((32,32))
-                red,green,blue,alpha=image.split()
-                self.pixmaps=[(32,32,Image.merge('RGBA',(alpha,red,green,blue)).tobytes())]
+            result=subprocess.run([service.gui,'--tray-icon',self.icon],capture_output=True,timeout=3)
+            if result.returncode==0 and len(result.stdout)==4096:
+                self.pixmaps=[(32,32,result.stdout)]
         self.bus.register_object('/StatusNotifierItem',Gio.DBusNodeInfo.new_for_xml(ITEM).interfaces[0],self.item_call,self.item_property,None)
         self.bus.register_object('/MenuBar',Gio.DBusNodeInfo.new_for_xml(MENU).interfaces[0],self.menu_call,self.menu_property,None)
         Gio.bus_watch_name_on_connection(self.bus,'org.kde.StatusNotifierWatcher',Gio.BusNameWatcherFlags.NONE,self.register,None)

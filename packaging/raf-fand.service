@@ -18,6 +18,7 @@ StateDirectoryMode=0700
 UMask=0007
 User=root
 Group=@GROUP@
+Environment=LAPTOP_CONTROL_UID=@UID@
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -26,6 +27,14 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
 # NVIDIA telemetry may need access to its device nodes as well as tuxedo_io.
 # Device policy is deliberately left to normal root/device permissions.
 

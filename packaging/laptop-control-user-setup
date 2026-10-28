@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Always run under the desktop UID. Never write into a user's home as root.
+set -euo pipefail
+if [[ $EUID -eq 0 ]]; then echo 'Run user integration as the desktop user.' >&2; exit 1; fi
+config_root=${XDG_CONFIG_HOME:-"$HOME/.config"}
+data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}
+if [[ ${1:-} == --remove ]]; then
+  if [[ -S "${XDG_RUNTIME_DIR:-/run/user/$UID}/bus" ]]; then
+    systemctl --user disable --now laptop-control.service || true
+  fi
+  rm -f "$config_root/systemd/user/laptop-control.service" "$config_root/systemd/user/default.target.wants/laptop-control.service"
+  rm -f "$config_root/autostart/laptop-fan-control.desktop" "$config_root/autostart/laptop-control.desktop"
+  rm -f "$HOME/.local/bin/laptop-control" "$data_root/applications/laptop-control.desktop" "$data_root/icons/hicolor/256x256/apps/laptop-control.png"
+  rm -f "$data_root/laptop-control/"{camera.py,virtual_output.py,control_service.py,tray.py,security.py,render_asset.py,cameractrls.py,cameractrls-LICENSE,COPYING,COPYING.LESSER,LICENSE,ICON-NOTICE.md,THIRD-PARTY.md}
+  if [[ -S "${XDG_RUNTIME_DIR:-/run/user/$UID}/bus" ]]; then systemctl --user daemon-reload; fi
+  exit
+fi
+# A source template directory is useful for unprivileged regression tests.
+templates=${1:-/usr/local/share/laptop-control}
+if [[ -f "$HOME/.local/bin/laptop-control" || -L "$HOME/.local/bin/laptop-control" ]]; then
+  ln -sfn /usr/local/bin/laptop-control "$HOME/.local/bin/laptop-control"
+fi
+install -d "$config_root/autostart" "$config_root/systemd/user/default.target.wants"
+rm -f "$config_root/autostart/laptop-fan-control.desktop"
+install -m644 "$templates/laptop-control-autostart.desktop" "$config_root/autostart/laptop-control.desktop"
+unit=$(mktemp "$config_root/systemd/user/.laptop-control.XXXXXX")
+trap 'rm -f "$unit"' EXIT
+sed -e 's|@HELPER@|/usr/local/share/laptop-control/camera.py|g' -e 's|@GUI@|/usr/local/bin/laptop-control|g' "$templates/laptop-control.service" > "$unit"
+chmod 644 "$unit"
+# Rename replaces a destination symlink; it never follows it to a privileged file.
+mv -fT "$unit" "$config_root/systemd/user/laptop-control.service"
+ln -sfn ../laptop-control.service "$config_root/systemd/user/default.target.wants/laptop-control.service"

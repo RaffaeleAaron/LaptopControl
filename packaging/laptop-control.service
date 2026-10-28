@@ -13,6 +13,11 @@ RuntimeDirectory=laptop-control
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=restart
 Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+MemoryMax=2G
+TasksMax=256
 
 [Install]
 WantedBy=default.target

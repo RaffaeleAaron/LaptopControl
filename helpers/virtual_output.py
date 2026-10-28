@@ -3,6 +3,7 @@ import os
 import threading
 from fcntl import ioctl
 import cameractrls as cc
+from security import capture_size
 
 class VirtualOutput:
     def __init__(self, device):
@@ -18,7 +19,7 @@ class VirtualOutput:
 
     def enable(self, width, height, fps):
         with self.lock:
-            size = (int(width), int(height), int(fps))
+            size = capture_size({'width': width, 'height': height, 'fps': fps})
             if self.fd is not None:
                 if size != self.size:
                     raise RuntimeError('Disable virtual output before changing resolution or frame rate')

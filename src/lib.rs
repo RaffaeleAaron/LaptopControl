@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, Read, Write},
+    os::fd::AsRawFd,
     os::unix::net::UnixStream,
     path::Path,
-    time::Duration,
+    time::{Duration, Instant},
 };
 pub mod curve;
 pub mod hardware;
@@ -346,15 +347,74 @@ pub struct Reply {
     pub error: Option<String>,
 }
 pub fn read_request(stream: &UnixStream) -> io::Result<Request> {
-    let mut line = String::new();
-    BufReader::new(stream.take(8193)).read_line(&mut line)?;
-    if line.len() > 8192 || !line.ends_with('\n') {
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let mut line = Vec::with_capacity(1024);
+    let mut reader = stream;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Request deadline exceeded",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        let mut chunk = [0; 1024];
+        let available = chunk.len().min(8193 - line.len());
+        let count = match reader.read(&mut chunk[..available]) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            other => other?,
+        };
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Incomplete request",
+            ));
+        }
+        line.extend_from_slice(&chunk[..count]);
+        if let Some(end) = line.iter().position(|b| *b == b'\n') {
+            if end < 8192 {
+                return serde_json::from_slice(&line[..=end]).map_err(io::Error::other);
+            }
+        }
+        if line.len() >= 8193 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid request length",
+            ));
+        }
+    }
+}
+/// Socket mode bits are not enough when the desktop user's primary group is shared.
+pub fn authorize_peer(stream: &UnixStream, allowed_uid: u32) -> io::Result<()> {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: u32::MAX,
+        gid: u32::MAX,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: valid socket fd and a correctly sized writable ucred buffer.
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>()
+        || (credentials.uid != 0 && credentials.uid != allowed_uid)
+    {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid request length",
+            io::ErrorKind::PermissionDenied,
+            "Unauthorized fan-service client",
         ));
     }
-    serde_json::from_str(&line).map_err(io::Error::other)
+    Ok(())
 }
 pub fn exchange(socket: &str, request: Request) -> Result<Status, String> {
     let mut stream =
@@ -411,6 +471,44 @@ pub fn target_with_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn peer_credentials_and_absolute_request_deadline() {
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        let uid = unsafe { libc::getuid() };
+        assert!(authorize_peer(&receiver, uid).is_ok());
+        if uid != 0 {
+            assert!(authorize_peer(&receiver, uid + 1).is_err());
+        }
+        let sending = std::thread::spawn(move || {
+            for byte in b"\"Status\"\n" {
+                if sender.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let start = Instant::now();
+        assert!(read_request(&receiver).is_err());
+        assert!(start.elapsed() < Duration::from_millis(300));
+        drop(receiver);
+        sending.join().unwrap();
+    }
+    #[test]
+    fn malformed_and_oversized_requests_are_bounded() {
+        for payload in [
+            b"[]\n".to_vec(),
+            b"{\n".to_vec(),
+            vec![b'x'; 8193],
+            b"\xff\n".to_vec(),
+        ] {
+            let (mut sender, receiver) = UnixStream::pair().unwrap();
+            sender.write_all(&payload).unwrap();
+            assert!(read_request(&receiver).is_err());
+        }
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        sender.write_all(b"\"Status\"\n").unwrap();
+        assert!(matches!(read_request(&receiver).unwrap(), Request::Status));
+    }
     fn temperatures(cpu: Option<f32>, gpu: Option<f32>) -> Temperatures {
         Temperatures {
             cpu,

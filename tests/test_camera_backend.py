@@ -67,7 +67,6 @@ class CameraControlsTest(unittest.TestCase):
 
 class AssetsTest(unittest.TestCase):
     def test_svg_text_and_cache(self):
-        from PIL import Image
         worker=camera.Worker()
         try:
             with tempfile.TemporaryDirectory() as directory:
@@ -78,7 +77,10 @@ class AssetsTest(unittest.TestCase):
                 text={'kind':'Text','text':'Hello · camera','font':'Sans','font_size':32,'width':.5,'color':[255]*4}
                 first=worker.asset(text,1280)
                 self.assertIs(first,worker.asset(text,1280))
-                with Image.open(first['path']) as raster:self.assertIsNotNone(raster.getbbox())
+                import subprocess
+                pixels=subprocess.run([camera.raster_binary(),'--tray-icon',first['path']],capture_output=True,check=True).stdout
+                self.assertEqual(len(pixels),4096)
+                self.assertTrue(any(pixels))
                 text['text']='Another scene'
                 self.assertNotEqual(first['key'],worker.asset(text,1280)['key'])
         finally:worker.asset_dir.cleanup()

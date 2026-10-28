@@ -36,7 +36,8 @@ with tempfile.TemporaryDirectory(prefix='laptop-control-service-') as directory:
     env.update(XDG_RUNTIME_DIR=str(directory),XDG_CONFIG_HOME=str(directory/'config'))
     fan_socket=directory/'fan.sock'
     (directory/'fans').mkdir()
-    fan=subprocess.Popen([str(ROOT/'target/debug/raf-fand'),'--simulate','--socket',str(fan_socket),'--simulate-state-dir',str(directory/'fans')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    fan_binary=os.environ.get('LAPTOP_CONTROL_FAN_TEST_BINARY',str(ROOT/'target/debug/raf-fand'))
+    fan=subprocess.Popen([fan_binary,'--simulate','--socket',str(fan_socket),'--simulate-state-dir',str(directory/'fans')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     service=None
     log=(directory/'service.log').open('w+')
     def launch():

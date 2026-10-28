@@ -11,7 +11,8 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --all-targets --locked
 XDG_RUNTIME_DIR=/tmp /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
-bash -n install.sh install-user.sh uninstall.sh
+bash -n install.sh install-user.sh uninstall.sh packaging/laptop-control-user-setup
+python3 scripts/check-advisories.py
 ```
 
 Unix-socket tests need a normal Linux user session. Camera and rendering smoke
@@ -24,3 +25,9 @@ protection or camera lifecycle changes. Keep hardware operations out of UI drawi
 code. Do not include local settings, recordings, private logo paths, build outputs,
 or personal screenshots in contributions. Keep the vendored backend unmodified
 and retain its source attribution and licenses.
+
+Security tests require Bubblewrap and a built Rust application binary. If using
+an external Cargo target directory, set `LAPTOP_CONTROL_RASTER_BINARY` to that
+`laptop-control` binary. `tests/privileged_install_smoke.py` is a root-only,
+temporary-fixture test for user/home symlink privilege boundaries. It never
+installs services or modifies real user settings.

@@ -8,7 +8,7 @@ use std::{
     os::{
         linux::net::SocketAddrExt,
         unix::{
-            fs::PermissionsExt,
+            fs::{OpenOptionsExt, PermissionsExt},
             net::{SocketAddr, UnixDatagram, UnixListener, UnixStream},
         },
     },
@@ -136,6 +136,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let simulated = args.iter().any(|a| a == "--simulate");
+    let allowed_uid = if simulated {
+        // SAFETY: getuid has no preconditions.
+        unsafe { libc::getuid() }
+    } else {
+        std::env::var("LAPTOP_CONTROL_UID")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|uid| *uid != 0)
+            .ok_or(
+                "Set LAPTOP_CONTROL_UID to the desktop user's UID (the installer configures this)",
+            )?
+    };
     let delay_ms = args
         .windows(2)
         .find(|w| w[0] == "--simulate-delay-ms")
@@ -174,7 +186,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .create(true)
         .truncate(false)
         .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(format!("{socket}.lock"))?;
+    if !lock.metadata()?.is_file() {
+        return Err("Invalid fan-service lock file".into());
+    }
+    lock.set_permissions(fs::Permissions::from_mode(0o600))?;
     // SAFETY: valid fd, integer flags; flock prevents duplicate hardware writers.
     if unsafe {
         libc::flock(
@@ -238,6 +256,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Ok((stream, _)) => {
                     if STOP.load(Ordering::Relaxed) {
                         break;
+                    }
+                    if authorize_peer(&stream, allowed_uid).is_err() {
+                        eprintln!("Rejected unauthorized fan-service client");
+                        continue;
                     }
                     if let Err(e) = serve(stream, &ipc, state_dir.as_deref(), &ipc_wake) {
                         eprintln!("IPC request: {e}");

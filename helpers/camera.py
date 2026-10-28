@@ -16,6 +16,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'vendor'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cameractrls as cc
 from virtual_output import VirtualOutput
+from security import capture_size, CommandReader, asset_sandbox
+
+
+def raster_binary():
+    candidates=[os.environ.get('LAPTOP_CONTROL_RASTER_BINARY'),
+        str(Path(__file__).resolve().parents[2]/'bin/laptop-control'),
+        str(Path(__file__).resolve().parent.parent/'target/release/laptop-control'),
+        str(Path(__file__).resolve().parent.parent/'target/debug/laptop-control')]
+    binary=next((p for p in candidates if p and Path(p).is_file()),None)
+    if not binary:raise RuntimeError('Build Laptop Control before rendering overlays')
+    return binary
 
 
 def intel_environment():
@@ -128,7 +139,7 @@ class Worker:
         self.config = None
         self.layers = {}
         self.assets = {}
-        self.preview = True
+        self.preview = False
         self.preview_lock = threading.Lock()
         self.stdout_lock = threading.Lock()
         self.preview_path = ''
@@ -208,7 +219,6 @@ class Worker:
 
     def asset(self, layer, output_width):
         """Rasterize changed SVG/text once, outside the per-frame GPU pipeline."""
-        from PIL import Image
         kind = layer.get('kind', 'Image')
         if kind == 'Text':
             key_data = {k: layer.get(k) for k in ('text', 'font', 'font_size', 'bold', 'color', 'width')}
@@ -221,57 +231,45 @@ class Worker:
         if key in self.assets:
             return self.assets[key]
         target = Path(self.asset_dir.name) / (key + '.png')
-        if kind == 'Text':
-            import gi
-            gi.require_version('Pango', '1.0')
-            gi.require_version('PangoCairo', '1.0')
-            from gi.repository import Pango, PangoCairo
-            import cairo
-            width = max(16, round(output_width * float(layer.get('width', .5))))
-            scratch = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
-            layout = PangoCairo.create_layout(cairo.Context(scratch))
-            font = Pango.FontDescription()
-            font.set_family(layer.get('font', 'Sans'))
-            font.set_absolute_size(float(layer.get('font_size', 36)) * Pango.SCALE)
-            font.set_weight(Pango.Weight.BOLD if layer.get('bold') else Pango.Weight.NORMAL)
-            layout.set_font_description(font)
-            layout.set_text(layer.get('text', ''), -1)
-            layout.set_width((width - 8) * Pango.SCALE)
-            layout.set_wrap(Pango.WrapMode.WORD_CHAR)
-            _, height = layout.get_pixel_size()
-            height = max(8, height + 8)
-            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-            context = cairo.Context(surface)
-            context.set_source_rgba(*(float(v) / 255 for v in layer.get('color', [255]*4)))
-            context.move_to(4, 4)
-            PangoCairo.show_layout(context, layout)
-            surface.write_to_png(str(target))
-        elif str(path).lower().endswith('.svg'):
-            import gi
-            gi.require_version('Rsvg', '2.0')
-            from gi.repository import Rsvg
-            import cairo
-            handle = Rsvg.Handle.new_from_file(str(path))
-            valid, iw, ih = handle.get_intrinsic_size_in_pixels()
-            if not valid:
-                dimensions = handle.get_intrinsic_dimensions()
-                box = dimensions[-1]
-                iw, ih = (box.width, box.height) if dimensions[-2] else (512., 512.)
-            width = max(1, min(1280, round(iw)))
-            height = max(1, round(width * ih / max(1., iw)))
-            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-            viewport = Rsvg.Rectangle()
-            viewport.x = viewport.y = 0
-            viewport.width, viewport.height = width, height
-            handle.render_document(cairo.Context(surface), viewport)
-            surface.write_to_png(str(target))
-        else:
-            with Image.open(path) as image:
-                width, height = image.size
-                image.convert('RGBA').save(target)
+        fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
+        try:
+            raster=None
+            if kind!='Text' and Path(layer['path']).suffix.lower()!='.svg':
+                raster=raster_binary()
+            command, safe_layer = asset_sandbox(Path(__file__).with_name('render_asset.py'), layer, target, raster)
+
+            payload=None if raster else json.dumps({'layer': safe_layer, 'output_width': output_width, 'target': '/output.png'}).encode()
+            metadata=self.render_process(command,payload)
+            if raster is None:
+                # Never feed native-parser output straight back into the host's PNG decoder.
+                # A second, memory-safe Rust pass validates dimensions and removes all metadata.
+                normalized=target.with_suffix('.safe.png')
+                fd=os.open(normalized,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+                os.close(fd)
+                try:
+                    command,_=asset_sandbox(Path(__file__).with_name('render_asset.py'),{'path':str(target)},normalized,raster_binary())
+                    metadata=self.render_process(command,None)
+                    os.replace(normalized,target)
+                finally:normalized.unlink(missing_ok=True)
+            size=json.loads(metadata)
+            width,height=size['width'],size['height']
+            if any(type(v) is not int or not 1<=v<=1280 for v in (width,height)):
+                raise ValueError('Invalid raster output dimensions')
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
         result = {'key': key, 'path': str(target), 'width': width, 'height': height}
         self.assets[key] = result
         return result
+
+    def render_process(self,command,payload):
+        with tempfile.TemporaryFile(dir=self.asset_dir.name) as output, tempfile.TemporaryFile(dir=self.asset_dir.name) as errors:
+            result=subprocess.run(command,input=payload,stdout=output,stderr=errors,timeout=6)
+            output.seek(0);errors.seek(0)
+            if result.returncode:
+                raise ValueError('Asset rejected: '+(errors.read(1000).decode(errors='replace').strip() or 'render worker exceeded its resource limit'))
+            return output.read(4096)
 
     def remove_layer(self, key):
         old = self.layers.pop(key)
@@ -322,14 +320,14 @@ class Worker:
         self.config = copy.deepcopy(config)
 
     def start(self, config, test=False):
+        w, h, fps = capture_size(config)
+        if config.get('format') not in ('MJPG', 'YUYV') or not isinstance(config.get('mirror'), bool):
+            raise ValueError('Unsupported camera format or mirror setting')
         self.init_gst()
         self.stop()
         self.state = 'Starting'
         self.snapshot()
         output = output_device()
-        w, h, fps = int(config['width']), int(config['height']), int(config['fps'])
-        if (w, h) not in [(640,480),(640,360),(1280,720),(1920,1080)] or fps not in (10,15,20,30):
-            raise ValueError('Unsupported capture dimensions or frame rate')
         source = config['input']
         if not test:
             if not source:source=next((d['path'] for d in devices() if 'IR' not in d['name']),'')
@@ -524,6 +522,8 @@ class Worker:
         return False
 
     def run(self, service=False, gui=None, fan_socket='/run/raf-fans/control.sock'):
+        if os.geteuid() == 0:
+            raise RuntimeError('Run camera capture as the desktop user, never as root')
         from gi.repository import GLib
         self.loop = GLib.MainLoop()
         GLib.timeout_add_seconds(1,self.standby_tick)
@@ -539,11 +539,24 @@ class Worker:
                 self.asset_dir.cleanup()
             return
         def read_commands():
-            for line in sys.stdin:
-                try:
-                    GLib.idle_add(self.handle, json.loads(line))
-                except (ValueError, TypeError) as error:
-                    self.send(error=str(error))
+            # Do not leave a daemon holding Python's buffered stdin lock at exit.
+            class Pipe:
+                def fileno(self):return sys.stdin.fileno()
+                def recv(self,size):return os.read(self.fileno(),size)
+            reader=CommandReader(Pipe())
+            try:
+                while True:
+                    command=reader.receive()
+                    if command is None:break
+                    done=threading.Event()
+                    def dispatch_one(command=command,done=done):
+                        try:return self.handle(command)
+                        finally:done.set()
+                    GLib.idle_add(dispatch_one)
+                    done.wait()
+                    if command['op']=='quit':return
+            except (OSError,ValueError,TypeError,RecursionError) as error:
+                self.send(error=str(error))
             GLib.idle_add(self.handle, {'op':'quit'})
         threading.Thread(target=read_commands, daemon=True).start()
         try:
